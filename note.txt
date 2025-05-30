@@ -1,0 +1,151 @@
+转换数据集：
+
+export PATH=~/yangzhuo/ffmpeg-7.0.2-amd64-static:${PATH}
+export LEROBOT_HOME=/baai-cwm-1/baai_cwm_ml/public_data/scenes/pi0/lerobot
+
+uv run examples/airbot/convert_airbot_data_to_lerobot.py --raw_dir datasets/pick_place --repo_id HFID/DATASET --no-push-to-hub
+uv run examples/airbot/convert_raw_airbot_data_to_lerobot.py --raw_dir data/raw --repo_id modelbest/stack_block --no-push-to-hub
+uv run examples/airbot/remove_cache_images.py --root_folder data/lerobot/destroy314/airbot_all/images #因为lerobot在转换完后才会删除图片😅
+
+> TODO
+> 修改create_dataset使用MultiLeRobotDataset以混合不同数据集
+需注释lerobot_dataset.py L1031 self.stats = aggregate_stats(self._datasets)
+越来越屎山了
+
+转换后结构如下：
+
+~/.cache/huggingface/lerobot/HFID/DATASET
+├── data
+│   ├── chunk-000
+│   │   ├── episode_000000.parquet
+│   │   ├── episode_000001.parquet
+│   │   ├── episode_000002.parquet
+│   │   └── ...
+│   └── ...
+├── meta
+│   ├── episodes.jsonl
+│   ├── info.json
+│   ├── stats.json
+│   └── tasks.jsonl
+└── videos
+    ├── chunk-000
+    │   ├── observation.images.cam_high
+    │   │   ├── episode_000000.mp4
+    │   │   ├── episode_000001.mp4
+    │   │   ├── ...
+    │   ├── observation.images.cam_left_wrist
+    │   └── ...
+    └── ...
+
+计算统计信息：
+
+CUDA_VISIBLE_DEVICES=0 uv run scripts/compute_norm_stats.py --config-name CFGNAME
+CUDA_VISIBLE_DEVICES=0 uv run scripts/compute_norm_stats.py --config-name pi0_fast_lora
+CUDA_VISIBLE_DEVICES=5 HF_ENDPOINT=https://hf-mirror.com LEROBOT_HOME=/baai-cwm-1/baai_cwm_ml/public_data/scenes/pi0/lerobot uv run scripts/compute_norm_stats.py --config-name pi0_fast_airbot_all
+
+这会产生.assets/CFGNAME/HFID/DATASET/norm_stats.json，并在微调时使用。对于共享数据集的多个config，可以手动复制对应的统计信息。
+
+> （更新）已弃用。代码已回退到每个config/dataset(s)存一个norm_stats.json，以适配多数据集训练
+> 或者可以做些小修改来方便些
+> 修改compute_norm_stats.py L69为：
+> output_path = config.data.assets.assets_dir + "/" + data_config.repo_id
+> 在每个TrainConfig中的data的初始化参数中添加：
+> assets=AssetsConfig(assets_dir="assets"), # 注意没有点
+> 此时统计信息会产生在.assets/HFID/DATASET/norm_stats.json，可以方便的在多个config间共享
+
+微调：
+
+CUDA_VISIBLE_DEVICES=5 XLA_PYTHON_CLIENT_MEM_FRACTION=0.99 uv run scripts/train.py pi0_fast_airbot_pick_place_low_mem_finetune --exp-name=pi0_fast_lora_absolute_airbot_pick_place --overwrite --no-wandb_enabled
+
+export HF_ENDPOINT=https://hf-mirror.com
+export LEROBOT_HOME=/baai-cwm-1/baai_cwm_ml/public_data/scenes/pi0/lerobot
+export XLA_PYTHON_CLIENT_MEM_FRACTION=0.99
+
+CUDA_VISIBLE_DEVICES=4 HF_ENDPOINT=https://hf-mirror.com LEROBOT_HOME=/baai-cwm-1/baai_cwm_ml/public_data/scenes/pi0/lerobot XLA_PYTHON_CLIENT_MEM_FRACTION=0.99 uv run scripts/train.py pi0_fast_airbot_all --exp-name=debug --overwrite --no-wandb_enabled
+CUDA_VISIBLE_DEVICES=5 HF_ENDPOINT=https://hf-mirror.com LEROBOT_HOME=/baai-cwm-1/baai_cwm_ml/public_data/scenes/pi0/lerobot XLA_PYTHON_CLIENT_MEM_FRACTION=0.99 uv run scripts/train.py pi0_fast_lora_airbot_all --exp-name=debug --overwrite --no-wandb_enabled
+CUDA_VISIBLE_DEVICES=5,6 HF_ENDPOINT=https://hf-mirror.com LEROBOT_HOME=/baai-cwm-1/baai_cwm_ml/public_data/scenes/pi0/lerobot XLA_PYTHON_CLIENT_MEM_FRACTION=0.3 uv run scripts/train.py pi0_fast_lora_airbot_all --exp-name=pi0_fast_lora_airbot_all --checkpoint-base-dir=/baai-cwm-nas/algorithm/zongzheng.zhang/yangzhuo/checkpoints --weight-loader.params-path=/baai-cwm-1/baai_cwm_ml/algorithm/zongzheng.zhang/.cache/openpi/openpi-assets/checkpoints/pi0_fast_base/params --resume --no-wandb_enabled --num_train_steps 40000 --data.halt-injection-prob=0.02
+
+CUDA_VISIBLE_DEVICES=6 XLA_PYTHON_CLIENT_MEM_FRACTION=0.6 uv run scripts/train.py pi0_fast_lora_blocks --exp-name=debug --overwrite --no-wandb_enabled
+CUDA_VISIBLE_DEVICES=6 XLA_PYTHON_CLIENT_MEM_FRACTION=0.6 uv run scripts/train.py pi0_lora_blocks --exp-name=debug --overwrite --no-wandb_enabled
+
+
+export HF_ENDPOINT=https://hf-mirror.com # already in bashrc
+export XLA_PYTHON_CLIENT_MEM_FRACTION=0.99 # 可能导致NCCL错误，开小一点就行
+
+
+CUDA_VISIBLE_DEVICES=7 uv run scripts/train.py pi0_fast_lora \
+--data.repo_id modelbest/stack_block \
+--exp-name debug --overwrite --no-wandb_enabled
+
+CUDA_VISIBLE_DEVICES=6 uv run scripts/train.py pi0_lora \
+--data.repo_id modelbest/stack_block \
+--exp-name debug --overwrite --no-wandb_enabled
+
+export WANDB_API_KEY=543a96cef34b11ce6e61cd19ed577264a0c51f11
+
+CUDA_VISIBLE_DEVICES=6,7 uv run scripts/train.py pi0_fast_lora \
+--data.repo_id modelbest/stack_block \
+--exp-name stack_block_q --overwrite
+
+CUDA_VISIBLE_DEVICES=4,5 uv run scripts/train.py pi0_lora \
+--data.repo_id modelbest/stack_block \
+--exp-name stack_block --overwrite
+
+CUDA_VISIBLE_DEVICES=2,3 uv run scripts/train.py pi0_fast_lora \
+--data.repo_id modelbest/stack_paper_cups \
+--exp-name stack_paper_cups --overwrite
+
+CUDA_VISIBLE_DEVICES=6,7 uv run scripts/train.py pi0_lora \
+--data.repo_id modelbest/fold_towel --exp-name fold_towel \
+--num_train_steps 40000
+
+CUDA_VISIBLE_DEVICES=2,3 uv run scripts/train.py pi0_lora \
+--data.repo_id modelbest/stack_paper_cups --exp-name stack_paper_cups \
+--num_train_steps 40000
+
+火山引擎：挂载vePFS和Nas
+WANDB_MODE offline
+LEROBOT_HOME /baai-cwm-1/baai_cwm_ml/public_data/scenes/pi0/lerobot
+XLA_PYTHON_CLIENT_MEM_FRACTION 0.99
+HF_ENDPOINT https://hf-mirror.com
+
+cd /baai-cwm-1/baai_cwm_ml/algorithm/zongzheng.zhang/yangzhuo/openpi
+/baai-cwm-1/baai_cwm_ml/algorithm/zongzheng.zhang/miniconda3/bin/uv run scripts/train.py pi0_fast_lora_airbot_all --exp-name=pi0_fast_lora_airbot_all --checkpoint-base-dir=/baai-cwm-nas/algorithm/zongzheng.zhang/yangzhuo/checkpoints --weight-loader.params-path=/baai-cwm-1/baai_cwm_ml/algorithm/zongzheng.zhang/.cache/openpi/openpi-assets/checkpoints/pi0_fast_base/params --overwrite
+
+cd /baai-cwm-1/baai_cwm_ml/algorithm/zongzheng.zhang/yangzhuo/openpi
+/baai-cwm-1/baai_cwm_ml/algorithm/zongzheng.zhang/miniconda3/bin/uv run scripts/train.py pi0_fast_airbot_all --exp-name=pi0_fast_airbot_all --checkpoint-base-dir=/baai-cwm-nas/algorithm/zongzheng.zhang/yangzhuo/checkpoints --weight-loader.params-path=/baai-cwm-1/baai_cwm_ml/algorithm/zongzheng.zhang/.cache/openpi/openpi-assets/checkpoints/pi0_fast_base/params --overwrite
+
+/baai-cwm-1/baai_cwm_ml/algorithm/zongzheng.zhang/miniconda3/bin/uv run scripts/train.py pi0_fast_lora_blocks --exp-name=horizon_len_inv --checkpoint-base-dir=/baai-cwm-nas/algorithm/zongzheng.zhang/yangzhuo/checkpoints --weight-loader.params-path=/baai-cwm-1/baai_cwm_ml/algorithm/zongzheng.zhang/.cache/openpi/openpi-assets/checkpoints/pi0_fast_base/params --model.action-horizon=25 --model.max-token-len 300 --batch_size=16 --overwrite
+
+/baai-cwm-1/baai_cwm_ml/algorithm/zongzheng.zhang/miniconda3/bin/uv run scripts/train.py pi0_lora_blocks --exp-name=horizon_inv --checkpoint-base-dir=/baai-cwm-nas/algorithm/zongzheng.zhang/yangzhuo/checkpoints --weight-loader.params-path=/baai-cwm-1/baai_cwm_ml/algorithm/zongzheng.zhang/.cache/openpi/openpi-assets/checkpoints/pi0_base/params --model.action-horizon=25 --batch_size=16 --overwrite
+
+chmod -R 777 /baai-cwm-nas/algorithm/zongzheng.zhang/yangzhuo/checkpoints
+chmod -R 777 /baai-cwm-1/baai_cwm_ml/algorithm/zongzheng.zhang/yangzhuo/openpi/wandb
+
+
+cd /baai-cwm-nas/algorithm/zongzheng.zhang/yangzhuo/checkpoints/
+cd pi0_fast_lora_airbot_all/pi0_fast_lora_airbot/
+tar -cvf pi0_fast_lora_all_20k.tar --exclude="*/train_state" 19999
+tosutil cp pi0_fast_lora_all_20k.tar tos://baai-cwm-bucket-01/pi0/
+rm pi0_fast_lora_all_20k.tar
+tosutil cp tos://baai-cwm-bucket-01/pi0/pi0_fast_lora_all_20k.tar .
+
+训练时：
+PromptFromLeRobotTask   (if data_config.prompt_from_task)
+RepackTransform(structure={'images': {'cam_high': 'observation.images.cam_high', 'cam_right_wrist': 'observation.images.cam_right_wrist'}, 'state': 'observation.state', 'actions': ('action',)}), 
+AirbotInputs(action_dim=14, model_type=<ModelType.PI0_FAST: 'pi0_fast'>, prompt_augmentation=False, halt_injection_prob=0.0), 
+DeltaActions(mask=(True, True, True, True, True, True, False, True, True, True, True, True, True, False)), 
+Normalize()
+InjectDefaultPrompt(prompt='Pick up the block on the table and place it in the red square area.'), 
+ResizeImages(height=224, width=224),
+TokenizeFASTInputs(tokenizer=<openpi.models.tokenizer.FASTTokenizer object at 0x732504fc9750>)
+
+推理：
+
+# in shell 1:
+openpi$ uv run scripts/serve_policy.py policy:checkpoint --policy.config=pi0_fast_airbot_pick_place_low_mem_finetune --policy.dir=checkpoints/fast_lora_pick_place_delta_13k
+openpi$ uv run scripts/serve_policy.py policy:checkpoint --policy.config=pi0_fast_airbot_pick_place_low_mem_finetune --policy.dir=checkpoints/fast_lora_pick_place_absolute_13k
+openpi$ uv run scripts/serve_policy.py policy:checkpoint --policy.config=pi0_fast_lora_airbot_all --policy.dir=checkpoints/fast_lora_airbot_all_20k
+# in shell 2:
+Imitate-All$ python pi0_evaluate_client.py [--right]
+uv run examples/simple_client/main.py --env ALOHA # for test
